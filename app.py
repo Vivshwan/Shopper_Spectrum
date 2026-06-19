@@ -15,6 +15,56 @@ import os
 import warnings
 warnings.filterwarnings('ignore')
 
+# Add this at the beginning of your app.py, before loading models
+import requests
+from pathlib import Path
+
+def download_dataset():
+    """Download the dataset if it doesn't exist"""
+    dataset_path = 'online_retail.csv'
+    
+    # Check if dataset already exists
+    if os.path.exists(dataset_path):
+        print(f"✅ Dataset already exists: {dataset_path}")
+        return True
+    
+    print("📥 Downloading dataset...")
+    
+    # Google Drive direct download URL
+    # Using the file ID from your link
+    file_id = '1rzRwxm_CJxcRzfoo9Ix37A2JTlMummY-'
+    url = f'https://drive.google.com/file/d/1rzRwxm_CJxcRzfoo9Ix37A2JTlMummY-/view?usp=sharing'
+    
+    try:
+        # Try to download
+        response = requests.get(url, stream=True)
+        
+        # Handle Google Drive's download confirmation
+        if 'confirm' in response.text:
+            # Extract confirmation token
+            import re
+            confirm_token = re.search(r'confirm=([^&]+)', response.text)
+            if confirm_token:
+                confirm_url = f'https://drive.google.com/uc?id={file_id}&confirm={confirm_token.group(1)}'
+                response = requests.get(confirm_url, stream=True)
+        
+        # Save the file
+        with open(dataset_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        print(f"✅ Dataset downloaded successfully: {dataset_path}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error downloading dataset: {e}")
+        return False
+
+# Call this function at the start of your app
+if not download_dataset():
+    st.error("❌ Could not download dataset. Please check your internet connection.")
+    st.stop()
+
 # ============================================================================
 # PAGE CONFIGURATION
 # ============================================================================
