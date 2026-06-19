@@ -26,14 +26,31 @@
 
 ### Dataset Link:
 The dataset can be downloaded from the following sources and save it as "online_retail.csv":
-https://drive.google.com/file/d/1rzRwxm_CJxcRzfoo9Ix37A2JTlMummY-/view?usp=sharing
+🔗 [Download Dataset](https://drive.google.com/file/d/1rzRwxm_CJxcRzfoo9Ix37A2JTlMummY-/view?usp=sharing)
 
+---
+
+## 📋 Step-by-Step Execution
+
+### Step 1: Clone & Setup
 ```bash
-# Install dependencies
+# Clone the repository
+git clone https://github.com/yourusername/shopper-spectrum.git
+cd shopper-spectrum
+
+# Create virtual environment (optional but recommended)
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+### Step 2: Install Dependencies
 pip install -r requirements.txt
 
-# Run analysis pipeline
+### Step 3: Download Dataset
+# Download "online_retail.csv" from the provided link
+# Place it in the project root directory
+
+### Step 4: Run Preprocessing Pipeline
 python preprocessing.py
 
-# Launch Streamlit app
+### Step 5: Launch Streamlit App
 streamlit run app.py
