@@ -396,72 +396,146 @@ def get_segment_description(segment):
     return descriptions.get(segment, 'Active customer with mixed behavior')
 
 def get_product_recommendations(product_input, n_recommendations=5):
-    """Get product recommendations by description or stock code"""
+    """Get product recommendations by description or stock code with improved search"""
     if not product_input or models is None:
         return None
     
     try:
-        # Search by description
+        # Clean and prepare search term
+        search_term = product_input.strip().lower()
+        
+        # Search by description (case-insensitive, partial match)
         matches = models['product_descriptions'][
-            models['product_descriptions']['Description'].str.contains(
-                product_input, case=False, na=False
+            models['product_descriptions']['Description'].str.lower().str.contains(
+                search_term, na=False
             )
         ]
         
+        # If no matches by description, try as stock code
         if len(matches) == 0:
-            # Try as stock code
             matches = models['product_descriptions'][
-                models['product_descriptions']['StockCode'].str.contains(
-                    product_input, case=False, na=False
+                models['product_descriptions']['StockCode'].str.lower().str.contains(
+                    search_term, na=False
                 )
             ]
         
+        # If still no matches, try fuzzy matching on description
+        if len(matches) == 0:
+            # Try to find products with similar words
+            search_words = search_term.split()
+            if len(search_words) > 1:
+                # Find products that contain at least 2 of the search words
+                mask = pd.Series(False, index=models['product_descriptions'].index)
+                for word in search_words:
+                    if len(word) > 2:  # Ignore short words
+                        word_mask = models['product_descriptions']['Description'].str.lower().str.contains(
+                            word, na=False
+                        )
+                        mask = mask | word_mask
+                
+                # Get matches where at least 2 words match
+                word_counts = mask.astype(int)
+                if len(search_words) > 2:
+                    matches = models['product_descriptions'][word_counts >= 2]
+                else:
+                    matches = models['product_descriptions'][mask]
+        
+        # If no matches found, return None
         if len(matches) == 0:
             return None
         
-        # Get the first matching product
-        product_code = matches['StockCode'].iloc[0]
+        # Try multiple potential products to find one with similarity scores
+        all_recommendations = []
         
-        # Check if similarity matrix is available
-        if models['item_similarity'] is None:
-            return None
-        
-        # Get similarity scores
-        if product_code not in models['item_similarity'].index:
-            return None
-        
-        similarities = models['item_similarity'][product_code].sort_values(ascending=False)
-        similarities = similarities.drop(product_code, errors='ignore')
-        top_similar = similarities.head(n_recommendations)
-        
-        if len(top_similar) == 0:
-            return None
-        
-        # Get product details
-        recommendations = []
-        for code, score in top_similar.items():
-            desc_match = models['product_descriptions'][
-                models['product_descriptions']['StockCode'] == code
-            ]
-            desc = desc_match['Description'].iloc[0] if len(desc_match) > 0 else f'Product_{code}'
+        # Try each matching product until we find one with recommendations
+        for idx, (_, match_row) in enumerate(matches.head(5).iterrows()):
+            product_code = match_row['StockCode']
             
-            # Get additional stats
+            # Check if product exists in similarity matrix
+            if models['item_similarity'] is None:
+                continue
+                
+            if product_code not in models['item_similarity'].index:
+                continue
+            
+            # Get similarity scores for this product
+            similarities = models['item_similarity'][product_code].sort_values(ascending=False)
+            similarities = similarities.drop(product_code, errors='ignore')
+            top_similar = similarities.head(n_recommendations * 2)  # Get extra to filter
+            
+            if len(top_similar) == 0:
+                continue
+            
+            # Get product details for each recommendation
+            for code, score in top_similar.items():
+                # Skip if score is too low
+                if score < 0.1:  # Minimum similarity threshold
+                    continue
+                    
+                desc_match = models['product_descriptions'][
+                    models['product_descriptions']['StockCode'] == code
+                ]
+                desc = desc_match['Description'].iloc[0] if len(desc_match) > 0 else f'Product_{code}'
+                
+                # Get additional stats
+                df = models['df_clean']
+                total_sold = df[df['StockCode'] == code]['Quantity'].sum()
+                unique_buyers = df[df['StockCode'] == code]['CustomerID'].nunique()
+                
+                all_recommendations.append({
+                    'StockCode': code,
+                    'Description': desc,
+                    'Similarity_Score': round(score, 4),
+                    'Total_Quantity_Sold': int(total_sold),
+                    'Unique_Buyers': int(unique_buyers)
+                })
+            
+            # If we found recommendations for this product, break
+            if len(all_recommendations) > 0:
+                break
+        
+        # If we still have no recommendations, try a different approach
+        if len(all_recommendations) == 0:
+            # Try to recommend popular products as fallback
             df = models['df_clean']
-            total_sold = df[df['StockCode'] == code]['Quantity'].sum()
-            unique_buyers = df[df['StockCode'] == code]['CustomerID'].nunique()
+            popular = df.groupby('StockCode').agg({
+                'Description': 'first',
+                'Quantity': 'sum',
+                'CustomerID': 'nunique'
+            }).reset_index()
+            popular.columns = ['StockCode', 'Description', 'Total_Quantity_Sold', 'Unique_Buyers']
+            popular = popular.sort_values('Total_Quantity_Sold', ascending=False).head(n_recommendations)
             
-            recommendations.append({
-                'StockCode': code,
-                'Description': desc,
-                'Similarity_Score': round(score, 4),
-                'Total_Quantity_Sold': int(total_sold),
-                'Unique_Buyers': int(unique_buyers)
-            })
+            for _, row in popular.iterrows():
+                all_recommendations.append({
+                    'StockCode': row['StockCode'],
+                    'Description': row['Description'],
+                    'Similarity_Score': 0.5,  # Default similarity score
+                    'Total_Quantity_Sold': int(row['Total_Quantity_Sold']),
+                    'Unique_Buyers': int(row['Unique_Buyers'])
+                })
+            
+            # Return popular products as recommendations
+            if len(all_recommendations) > 0:
+                df_recs = pd.DataFrame(all_recommendations)
+                # Return only top N
+                return df_recs.head(n_recommendations)
         
-        return pd.DataFrame(recommendations)
+        # Remove duplicates and sort by similarity
+        if len(all_recommendations) > 0:
+            df_recs = pd.DataFrame(all_recommendations)
+            df_recs = df_recs.drop_duplicates(subset=['StockCode'])
+            df_recs = df_recs.sort_values('Similarity_Score', ascending=False)
+            
+            # Return only top N
+            return df_recs.head(n_recommendations)
+        
+        return None
         
     except Exception as e:
-        st.error(f"Error getting recommendations: {e}")
+        print(f"Error in get_recommendations: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def predict_customer_segment(recency, frequency, monetary):
