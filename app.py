@@ -7,63 +7,14 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import pickle
+import os
+import requests
 import plotly.express as px
 import plotly.graph_objects as go
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics.pairwise import cosine_similarity
-import os
 import warnings
 warnings.filterwarnings('ignore')
-
-# Add this at the beginning of your app.py, before loading models
-import requests
-from pathlib import Path
-
-def download_dataset():
-    """Download the dataset if it doesn't exist"""
-    dataset_path = 'online_retail.csv'
-    
-    # Check if dataset already exists
-    if os.path.exists(dataset_path):
-        print(f"✅ Dataset already exists: {dataset_path}")
-        return True
-    
-    print("📥 Downloading dataset...")
-    
-    # Google Drive direct download URL
-    # Using the file ID from your link
-    file_id = '1rzRwxm_CJxcRzfoo9Ix37A2JTlMummY-'
-    url = f'https://drive.google.com/file/d/1rzRwxm_CJxcRzfoo9Ix37A2JTlMummY-/view?usp=sharing'
-    
-    try:
-        # Try to download
-        response = requests.get(url, stream=True)
-        
-        # Handle Google Drive's download confirmation
-        if 'confirm' in response.text:
-            # Extract confirmation token
-            import re
-            confirm_token = re.search(r'confirm=([^&]+)', response.text)
-            if confirm_token:
-                confirm_url = f'https://drive.google.com/uc?id={file_id}&confirm={confirm_token.group(1)}'
-                response = requests.get(confirm_url, stream=True)
-        
-        # Save the file
-        with open(dataset_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        
-        print(f"✅ Dataset downloaded successfully: {dataset_path}")
-        return True
-        
-    except Exception as e:
-        print(f"❌ Error downloading dataset: {e}")
-        return False
-
-# Call this function at the start of your app
-if not download_dataset():
-    st.error("❌ Could not download dataset. Please check your internet connection.")
-    st.stop()
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -193,6 +144,55 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================================================
+# DATASET LOADER
+# ============================================================================
+
+@st.cache_resource
+def download_dataset():
+    """Download dataset if not present"""
+    dataset_path = 'online_retail.csv'
+    
+    if os.path.exists(dataset_path):
+        st.success("✅ Dataset found locally")
+        return True
+    
+    with st.spinner("📥 Downloading dataset (this may take a moment)..."):
+        try:
+            # Google Drive direct download
+            file_id = '1rzRwxm_CJxcRzfoo9Ix37A2JTlMummY-'
+            url = f'https://drive.google.com/uc?export=download&id={file_id}'
+            
+            # Download with progress
+            response = requests.get(url, stream=True, timeout=60)
+            
+            # Handle Google Drive's confirmation page
+            if 'confirm' in response.text:
+                import re
+                confirm_token = re.search(r'confirm=([^&]+)', response.text)
+                if confirm_token:
+                    confirm_url = f'https://drive.google.com/uc?id={file_id}&confirm={confirm_token.group(1)}'
+                    response = requests.get(confirm_url, stream=True, timeout=60)
+            
+            # Save file
+            total_size = int(response.headers.get('content-length', 0))
+            with open(dataset_path, 'wb') as f:
+                if total_size == 0:
+                    f.write(response.content)
+                else:
+                    downloaded = 0
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                        downloaded += len(chunk)
+            
+            st.success("✅ Dataset downloaded successfully!")
+            return True
+            
+        except Exception as e:
+            st.error(f"❌ Error downloading dataset: {e}")
+            st.info("ℹ️ Please manually download the dataset from:\nhttps://drive.google.com/file/d/1rzRwxm_CJxcRzfoo9Ix37A2JTlMummY-/view?usp=sharing")
+            return False
+
+# ============================================================================
 # LOAD MODELS
 # ============================================================================
 
@@ -200,6 +200,11 @@ st.markdown("""
 def load_models():
     """Load all saved models and data"""
     models_dir = 'models'
+    
+    # Ensure dataset exists
+    if not os.path.exists('online_retail.csv'):
+        if not download_dataset():
+            return None
     
     try:
         # Load segmentation model package
@@ -209,113 +214,127 @@ def load_models():
         # Load recommendation model if available
         recommendation_model = None
         try:
-            # Try both possible filenames
             if os.path.exists(f'{models_dir}/recommendation_model.pkl'):
                 with open(f'{models_dir}/recommendation_model.pkl', 'rb') as file:
                     recommendation_model = pickle.load(file)
                 print("✅ Recommendation model loaded successfully")
-            elif os.path.exists(f'{models_dir}/recommendation_system.pkl'):
-                with open(f'{models_dir}/recommendation_system.pkl', 'rb') as file:
-                    recommendation_model = pickle.load(file)
-                print("✅ Recommendation model loaded successfully")
-            else:
-                print("ℹ️ No recommendation model found - using fallback method")
         except Exception as e:
             print(f"⚠️ Error loading recommendation model: {e}")
         
-        # Get RFM data from model package
+        # Get data from model package
         rfm_data = segmentation_model.get('rfm_data', None)
+        cluster_summary = segmentation_model.get('cluster_summary', None)
+        segment_labels = segmentation_model.get('segment_labels', None)
+        segment_colors = segmentation_model.get('segment_colors', None)
+        segment_descriptions = segmentation_model.get('segment_descriptions', None)
         
-        # If no rfm_data in package, try to load from CSV
-        if rfm_data is None:
+        # If cluster_summary is None, try to create it from rfm_data and cluster labels
+        if cluster_summary is None and rfm_data is not None:
             try:
-                rfm_data = pd.read_csv(f'{models_dir}/rfm_data.csv')
-            except:
-                rfm_data = None
+                # Create cluster summary from rfm_data
+                cluster_stats = rfm_data.groupby('Cluster').agg({
+                    'Recency': 'mean',
+                    'Frequency': 'mean',
+                    'Monetary': 'mean'
+                }).reset_index()
+                
+                cluster_sizes = rfm_data['Cluster'].value_counts().reset_index()
+                cluster_sizes.columns = ['Cluster', 'Size']
+                cluster_sizes['Percentage'] = (cluster_sizes['Size'] / len(rfm_data) * 100).round(1)
+                
+                cluster_summary = cluster_stats.merge(cluster_sizes, on='Cluster')
+                cluster_summary['Segment_Label'] = cluster_summary['Cluster'].map(segment_labels)
+                
+                # Rename columns for consistency
+                cluster_summary = cluster_summary.rename(columns={
+                    'Recency': 'Avg_Recency',
+                    'Frequency': 'Avg_Frequency',
+                    'Monetary': 'Avg_Monetary'
+                })
+                
+                # Add characteristics
+                if segment_descriptions:
+                    cluster_summary['Characteristics'] = cluster_summary['Segment_Label'].map(segment_descriptions)
+                
+                print("✅ Created cluster summary from RFM data")
+                
+            except Exception as e:
+                print(f"⚠️ Could not create cluster summary: {e}")
         
-        # Load cluster summary
-        if os.path.exists(f'{models_dir}/cluster_summary.csv'):
-            cluster_summary = pd.read_csv(f'{models_dir}/cluster_summary.csv')
-        else:
-            # Create from model package
-            if 'cluster_summary' in segmentation_model:
-                cluster_summary = segmentation_model['cluster_summary']
-            else:
-                cluster_summary = None
-        
-        # Extract product descriptions and create user-item matrix from cleaned data
+        # Load product descriptions from dataset
         try:
-            # Try to load cleaned data
-            df_clean = pd.read_csv(f'{models_dir}/cleaned_retail_data.csv')
-        except:
-            # If not available, use the original data
             df_clean = pd.read_csv('online_retail.csv')
-            # Basic preprocessing
             df_clean['InvoiceDate'] = pd.to_datetime(df_clean['InvoiceDate'], errors='coerce')
             df_clean = df_clean.dropna(subset=['CustomerID'])
             df_clean = df_clean[~df_clean['InvoiceNo'].astype(str).str.startswith('C')]
             df_clean = df_clean[df_clean['Quantity'] > 0]
             df_clean = df_clean[df_clean['UnitPrice'] > 0]
             df_clean['TotalAmount'] = df_clean['Quantity'] * df_clean['UnitPrice']
-        
-        # Create product descriptions lookup
-        product_descriptions = df_clean[['StockCode', 'Description']].drop_duplicates(subset=['StockCode'])
-        product_descriptions = product_descriptions.dropna(subset=['Description'])
-        
-        # Create user-item matrix for recommendations
-        user_item_matrix = df_clean.pivot_table(
-            index='CustomerID',
-            columns='StockCode',
-            values='Quantity',
-            fill_value=0,
-            aggfunc='sum'
-        )
-        
-        # Load or calculate item similarity
-        if recommendation_model is not None:
-            # Use loaded similarity matrix
-            if 'item_similarity_matrix' in recommendation_model:
-                item_similarity_df = recommendation_model['item_similarity_matrix']
-            elif 'item_similarity' in recommendation_model:
-                item_similarity_df = recommendation_model['item_similarity']
-            else:
-                # Try to find similarity matrix in the model
-                for key in recommendation_model.keys():
-                    if 'similarity' in key.lower() or 'sim' in key.lower():
-                        item_similarity_df = recommendation_model[key]
-                        break
+            
+            product_descriptions = df_clean[['StockCode', 'Description']].drop_duplicates(subset=['StockCode'])
+            product_descriptions = product_descriptions.dropna(subset=['Description'])
+            
+            # Create user-item matrix for recommendations
+            user_item_matrix = df_clean.pivot_table(
+                index='CustomerID',
+                columns='StockCode',
+                values='Quantity',
+                fill_value=0,
+                aggfunc='sum'
+            )
+            
+            # Load or calculate similarity matrix
+            if recommendation_model is not None:
+                if 'item_similarity_matrix' in recommendation_model:
+                    item_similarity_df = recommendation_model['item_similarity_matrix']
+                elif 'item_similarity' in recommendation_model:
+                    item_similarity_df = recommendation_model['item_similarity']
                 else:
-                    item_similarity_df = None
-        else:
-            # Calculate similarity if not available
-            if len(user_item_matrix.columns) <= 500:
-                item_similarity = cosine_similarity(user_item_matrix.T)
-                item_similarity_df = pd.DataFrame(
-                    item_similarity,
-                    index=user_item_matrix.columns,
-                    columns=user_item_matrix.columns
-                )
+                    # Try to find any similarity matrix
+                    for key in recommendation_model.keys():
+                        if 'similarity' in key.lower() or 'sim' in key.lower():
+                            item_similarity_df = recommendation_model[key]
+                            break
+                    else:
+                        item_similarity_df = None
             else:
-                # Use top products if too many
-                top_products = df_clean.groupby('StockCode')['Quantity'].sum().sort_values(ascending=False).head(500).index
-                user_item_subset = user_item_matrix[top_products]
-                item_similarity = cosine_similarity(user_item_subset.T)
-                item_similarity_df = pd.DataFrame(
-                    item_similarity,
-                    index=user_item_subset.columns,
-                    columns=user_item_subset.columns
-                )
-        
-        return {
-            'segmentation': segmentation_model,
-            'cluster_summary': cluster_summary,
-            'product_descriptions': product_descriptions,
-            'item_similarity': item_similarity_df,
-            'df_clean': df_clean,
-            'user_item_matrix': user_item_matrix,
-            'recommendation_model': recommendation_model,
-            'rfm_data': rfm_data
-        }
+                # Calculate similarity on subset if needed
+                if len(user_item_matrix.columns) <= 500:
+                    from sklearn.metrics.pairwise import cosine_similarity
+                    item_similarity = cosine_similarity(user_item_matrix.T)
+                    item_similarity_df = pd.DataFrame(
+                        item_similarity,
+                        index=user_item_matrix.columns,
+                        columns=user_item_matrix.columns
+                    )
+                else:
+                    top_products = df_clean.groupby('StockCode')['Quantity'].sum().sort_values(ascending=False).head(500).index
+                    user_item_subset = user_item_matrix[top_products]
+                    from sklearn.metrics.pairwise import cosine_similarity
+                    item_similarity = cosine_similarity(user_item_subset.T)
+                    item_similarity_df = pd.DataFrame(
+                        item_similarity,
+                        index=user_item_subset.columns,
+                        columns=user_item_subset.columns
+                    )
+            
+            return {
+                'segmentation': segmentation_model,
+                'cluster_summary': cluster_summary,
+                'product_descriptions': product_descriptions,
+                'item_similarity': item_similarity_df,
+                'df_clean': df_clean,
+                'user_item_matrix': user_item_matrix,
+                'recommendation_model': recommendation_model,
+                'rfm_data': rfm_data,
+                'segment_labels': segment_labels,
+                'segment_colors': segment_colors,
+                'segment_descriptions': segment_descriptions
+            }
+            
+        except Exception as e:
+            st.error(f"❌ Error processing data: {e}")
+            return None
         
     except FileNotFoundError as e:
         st.error(f"❌ Model file not found: {e}")
@@ -323,6 +342,8 @@ def load_models():
         return None
     except Exception as e:
         st.error(f"❌ Error loading models: {e}")
+        import traceback
+        st.error(traceback.format_exc())
         return None
 
 # ============================================================================
@@ -331,6 +352,9 @@ def load_models():
 
 def get_segment_color(segment):
     """Return color for each segment"""
+    if models and models.get('segment_colors'):
+        return models['segment_colors'].get(segment, '#95a5a6')
+    
     colors = {
         'High-Value': '#2ecc71',
         'Regular': '#3498db',
@@ -357,6 +381,9 @@ def get_segment_emoji(segment):
 
 def get_segment_description(segment):
     """Return description for each segment"""
+    if models and models.get('segment_descriptions'):
+        return models['segment_descriptions'].get(segment, 'Active customer with mixed behavior')
+    
     descriptions = {
         'High-Value': 'Premium customers who purchase frequently and spend the most',
         'Regular': 'Steady purchasers with consistent buying behavior',
@@ -392,7 +419,7 @@ def get_product_recommendations(product_input, n_recommendations=5):
         if len(matches) == 0:
             return None
         
-        # Get the most popular product
+        # Get the first matching product
         product_code = matches['StockCode'].iloc[0]
         
         # Check if similarity matrix is available
@@ -446,7 +473,7 @@ def predict_customer_segment(recency, frequency, monetary):
         segmentation = models['segmentation']
         scaler = segmentation['scaler']
         model = segmentation['model']
-        segment_labels = segmentation['segment_labels']
+        segment_labels = models.get('segment_labels', {})
         
         # Scale and predict
         scaled_data = scaler.transform([[recency, frequency, monetary]])
