@@ -80,7 +80,8 @@ cluster_summary_with_labels.csv - Segment statistics
 ### Step 5: Launch Streamlit App
 ```streamlit run app.py```
 
-Step 6: Explore the Dashboard
+
+### Step 6: Explore the Dashboard
 The app opens in your browser with three main pages:
 
 🎯 Customer Segmentation
