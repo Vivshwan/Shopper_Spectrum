@@ -33,7 +33,6 @@ The dataset can be downloaded from the following sources and save it as "online_
 ## 📋 Step-by-Step Execution
 
 ### Step 1: Clone & Setup
-```bash
 # Clone the repository
 git clone https://github.com/yourusername/shopper-spectrum.git
 cd shopper-spectrum
