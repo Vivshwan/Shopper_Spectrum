@@ -868,12 +868,5 @@ print("  9. eda_visualizations.png - EDA plots")
 print("  10. recommendations_visualization.png - Product recommendations")
 
 print("\n" + "="*80)
-print("🚀 TO DEPLOY WITH STREAMLIT:")
-print("="*80)
-print("1. Run: streamlit run app.py")
-print("2. Enter customer RFM values")
-print("3. Get instant segment prediction!")
-
-print("\n" + "="*80)
-print("✅ COMPLETE! FORCED 4 CLUSTERS FOR EXACT LABELING")
+print("✅ COMPLETE! 4 CLUSTERS FOR EXACT LABELING")
 print("="*80)
