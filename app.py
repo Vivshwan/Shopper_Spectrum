@@ -10,6 +10,8 @@ import pickle
 import plotly.express as px
 import plotly.graph_objects as go
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics.pairwise import cosine_similarity
+import os
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -147,20 +149,56 @@ st.markdown("""
 @st.cache_resource
 def load_models():
     """Load all saved models and data"""
+    models_dir = 'models'
+    
     try:
         # Load segmentation model package
-        with open('models/streamlit_model_package.pkl', 'rb') as file:
+        with open(f'{models_dir}/streamlit_model_package.pkl', 'rb') as file:
             segmentation_model = pickle.load(file)
         
-        # Load cluster summary
-        cluster_summary = pd.read_csv('models/cluster_summary_with_labels.csv')
-        
-        # Load the original data for product recommendations
-        # Try to load cleaned data if available
+        # Load recommendation model if available
+        recommendation_model = None
         try:
-            df_clean = pd.read_csv('models/cleaned_retail_data.csv')
+            # Try both possible filenames
+            if os.path.exists(f'{models_dir}/recommendation_model.pkl'):
+                with open(f'{models_dir}/recommendation_model.pkl', 'rb') as file:
+                    recommendation_model = pickle.load(file)
+                print("✅ Recommendation model loaded successfully")
+            elif os.path.exists(f'{models_dir}/recommendation_system.pkl'):
+                with open(f'{models_dir}/recommendation_system.pkl', 'rb') as file:
+                    recommendation_model = pickle.load(file)
+                print("✅ Recommendation model loaded successfully")
+            else:
+                print("ℹ️ No recommendation model found - using fallback method")
+        except Exception as e:
+            print(f"⚠️ Error loading recommendation model: {e}")
+        
+        # Get RFM data from model package
+        rfm_data = segmentation_model.get('rfm_data', None)
+        
+        # If no rfm_data in package, try to load from CSV
+        if rfm_data is None:
+            try:
+                rfm_data = pd.read_csv(f'{models_dir}/rfm_data.csv')
+            except:
+                rfm_data = None
+        
+        # Load cluster summary
+        if os.path.exists(f'{models_dir}/cluster_summary.csv'):
+            cluster_summary = pd.read_csv(f'{models_dir}/cluster_summary.csv')
+        else:
+            # Create from model package
+            if 'cluster_summary' in segmentation_model:
+                cluster_summary = segmentation_model['cluster_summary']
+            else:
+                cluster_summary = None
+        
+        # Extract product descriptions and create user-item matrix from cleaned data
+        try:
+            # Try to load cleaned data
+            df_clean = pd.read_csv(f'{models_dir}/cleaned_retail_data.csv')
         except:
-            # If not available, try to load from original
+            # If not available, use the original data
             df_clean = pd.read_csv('online_retail.csv')
             # Basic preprocessing
             df_clean['InvoiceDate'] = pd.to_datetime(df_clean['InvoiceDate'], errors='coerce')
@@ -183,26 +221,55 @@ def load_models():
             aggfunc='sum'
         )
         
-        # Calculate item similarity
-        from sklearn.metrics.pairwise import cosine_similarity
-        item_similarity = cosine_similarity(user_item_matrix.T)
-        item_similarity_df = pd.DataFrame(
-            item_similarity,
-            index=user_item_matrix.columns,
-            columns=user_item_matrix.columns
-        )
+        # Load or calculate item similarity
+        if recommendation_model is not None:
+            # Use loaded similarity matrix
+            if 'item_similarity_matrix' in recommendation_model:
+                item_similarity_df = recommendation_model['item_similarity_matrix']
+            elif 'item_similarity' in recommendation_model:
+                item_similarity_df = recommendation_model['item_similarity']
+            else:
+                # Try to find similarity matrix in the model
+                for key in recommendation_model.keys():
+                    if 'similarity' in key.lower() or 'sim' in key.lower():
+                        item_similarity_df = recommendation_model[key]
+                        break
+                else:
+                    item_similarity_df = None
+        else:
+            # Calculate similarity if not available
+            if len(user_item_matrix.columns) <= 500:
+                item_similarity = cosine_similarity(user_item_matrix.T)
+                item_similarity_df = pd.DataFrame(
+                    item_similarity,
+                    index=user_item_matrix.columns,
+                    columns=user_item_matrix.columns
+                )
+            else:
+                # Use top products if too many
+                top_products = df_clean.groupby('StockCode')['Quantity'].sum().sort_values(ascending=False).head(500).index
+                user_item_subset = user_item_matrix[top_products]
+                item_similarity = cosine_similarity(user_item_subset.T)
+                item_similarity_df = pd.DataFrame(
+                    item_similarity,
+                    index=user_item_subset.columns,
+                    columns=user_item_subset.columns
+                )
         
         return {
             'segmentation': segmentation_model,
             'cluster_summary': cluster_summary,
             'product_descriptions': product_descriptions,
             'item_similarity': item_similarity_df,
-            'df_clean': df_clean
+            'df_clean': df_clean,
+            'user_item_matrix': user_item_matrix,
+            'recommendation_model': recommendation_model,
+            'rfm_data': rfm_data
         }
         
     except FileNotFoundError as e:
         st.error(f"❌ Model file not found: {e}")
-        st.info("Please run the analysis script first to generate the models.")
+        st.info("Please run the preprocessing script first to generate the models.")
         return None
     except Exception as e:
         st.error(f"❌ Error loading models: {e}")
@@ -278,6 +345,10 @@ def get_product_recommendations(product_input, n_recommendations=5):
         # Get the most popular product
         product_code = matches['StockCode'].iloc[0]
         
+        # Check if similarity matrix is available
+        if models['item_similarity'] is None:
+            return None
+        
         # Get similarity scores
         if product_code not in models['item_similarity'].index:
             return None
@@ -286,14 +357,16 @@ def get_product_recommendations(product_input, n_recommendations=5):
         similarities = similarities.drop(product_code, errors='ignore')
         top_similar = similarities.head(n_recommendations)
         
+        if len(top_similar) == 0:
+            return None
+        
         # Get product details
         recommendations = []
         for code, score in top_similar.items():
-            desc = models['product_descriptions'][
+            desc_match = models['product_descriptions'][
                 models['product_descriptions']['StockCode'] == code
-            ]['Description'].iloc[0] if len(models['product_descriptions'][
-                models['product_descriptions']['StockCode'] == code
-            ]) > 0 else f'Product_{code}'
+            ]
+            desc = desc_match['Description'].iloc[0] if len(desc_match) > 0 else f'Product_{code}'
             
             # Get additional stats
             df = models['df_clean']
@@ -331,17 +404,24 @@ def predict_customer_segment(recency, frequency, monetary):
         segment = segment_labels.get(cluster, 'Unknown')
         
         # Get cluster statistics
-        cluster_stats = models['cluster_summary']
-        stats = cluster_stats[cluster_stats['Cluster'] == cluster]
+        if models['cluster_summary'] is not None:
+            stats = models['cluster_summary'][models['cluster_summary']['Cluster'] == cluster]
+            avg_recency = float(stats['Avg_Recency'].values[0]) if len(stats) > 0 else None
+            avg_frequency = float(stats['Avg_Frequency'].values[0]) if len(stats) > 0 else None
+            avg_monetary = float(stats['Avg_Monetary'].values[0]) if len(stats) > 0 else None
+            cluster_size = int(stats['Size'].values[0]) if len(stats) > 0 else None
+            cluster_percentage = float(stats['Percentage'].values[0]) if len(stats) > 0 else None
+        else:
+            avg_recency = avg_frequency = avg_monetary = cluster_size = cluster_percentage = None
         
         return {
             'cluster': int(cluster),
             'segment': segment,
-            'avg_recency': float(stats['Avg_Recency'].values[0]) if len(stats) > 0 else None,
-            'avg_frequency': float(stats['Avg_Frequency'].values[0]) if len(stats) > 0 else None,
-            'avg_monetary': float(stats['Avg_Monetary'].values[0]) if len(stats) > 0 else None,
-            'cluster_size': int(stats['Size'].values[0]) if len(stats) > 0 else None,
-            'cluster_percentage': float(stats['Percentage'].values[0]) if len(stats) > 0 else None
+            'avg_recency': avg_recency,
+            'avg_frequency': avg_frequency,
+            'avg_monetary': avg_monetary,
+            'cluster_size': cluster_size,
+            'cluster_percentage': cluster_percentage
         }
     except Exception as e:
         st.error(f"Error predicting segment: {e}")
@@ -375,20 +455,24 @@ with st.sidebar:
     
     # System info
     st.markdown("### 📊 System Info")
-    st.markdown(f"**Total Customers:** {models['segmentation']['rfm_data'].shape[0]:,}")
+    if models['rfm_data'] is not None:
+        st.markdown(f"**Total Customers:** {models['rfm_data'].shape[0]:,}")
+    else:
+        st.markdown(f"**Total Customers:** {models['segmentation']['rfm_data'].shape[0]:,}")
     st.markdown(f"**Clusters:** {models['segmentation']['n_clusters']}")
     
     st.markdown("---")
     
     # Quick stats
-    st.markdown("### 📈 Quick Stats")
-    for _, row in models['cluster_summary'].iterrows():
-        color = get_segment_color(row['Segment_Label'])
-        st.markdown(
-            f"<span style='color:{color};font-weight:bold'>●</span> "
-            f"{row['Segment_Label']}: {row['Size']:,} ({row['Percentage']:.1f}%)",
-            unsafe_allow_html=True
-        )
+    if models['cluster_summary'] is not None:
+        st.markdown("### 📈 Quick Stats")
+        for _, row in models['cluster_summary'].iterrows():
+            color = get_segment_color(row['Segment_Label'])
+            st.markdown(
+                f"<span style='color:{color};font-weight:bold'>●</span> "
+                f"{row['Segment_Label']}: {row['Size']:,} ({row['Percentage']:.1f}%)",
+                unsafe_allow_html=True
+            )
 
 # ============================================================================
 # PAGE: CUSTOMER SEGMENTATION
@@ -482,8 +566,8 @@ if page == "🎯 Customer Segmentation":
                     with col_a:
                         st.metric(
                             "👥 Cluster Size",
-                            f"{result['cluster_size']:,}",
-                            f"{result['cluster_percentage']:.1f}% of customers"
+                            f"{result['cluster_size']:,}" if result['cluster_size'] else "N/A",
+                            f"{result['cluster_percentage']:.1f}% of customers" if result['cluster_percentage'] else None
                         )
                     with col_b:
                         st.metric(
@@ -498,55 +582,56 @@ if page == "🎯 Customer Segmentation":
                         )
                     
                     # Display cluster comparison
-                    st.markdown("---")
-                    st.markdown("### 📊 How This Customer Compares")
-                    
-                    # Create comparison chart
-                    fig = go.Figure()
-                    
-                    customer_values = [recency, frequency, monetary]
-                    cluster_avg = [
-                        result['avg_recency'] if result['avg_recency'] else 0,
-                        result['avg_frequency'] if result['avg_frequency'] else 0,
-                        result['avg_monetary'] if result['avg_monetary'] else 0
-                    ]
-                    
-                    # Normalize
-                    max_values = [365, 100, 10000]
-                    customer_norm = [v/max_values[i] for i, v in enumerate(customer_values)]
-                    cluster_norm = [v/max_values[i] for i, v in enumerate(cluster_avg)]
-                    
-                    fig.add_trace(go.Scatterpolar(
-                        r=customer_norm,
-                        theta=['Recency', 'Frequency', 'Monetary'],
-                        fill='toself',
-                        name='Customer',
-                        line_color='#667eea',
-                        fillcolor='rgba(102, 126, 234, 0.3)'
-                    ))
-                    
-                    fig.add_trace(go.Scatterpolar(
-                        r=cluster_norm,
-                        theta=['Recency', 'Frequency', 'Monetary'],
-                        fill='toself',
-                        name=f'Cluster {segment} Avg',
-                        line_color='#e74c3c',
-                        fillcolor='rgba(231, 76, 60, 0.2)'
-                    ))
-                    
-                    fig.update_layout(
-                        polar=dict(
-                            radialaxis=dict(
-                                visible=True,
-                                range=[0, 1]
-                            )
-                        ),
-                        showlegend=True,
-                        title="Customer vs Cluster Average",
-                        height=400
-                    )
-                    
-                    st.plotly_chart(fig, use_container_width=True)
+                    if result['avg_recency'] is not None:
+                        st.markdown("---")
+                        st.markdown("### 📊 How This Customer Compares")
+                        
+                        # Create comparison chart
+                        fig = go.Figure()
+                        
+                        customer_values = [recency, frequency, monetary]
+                        cluster_avg = [
+                            result['avg_recency'] if result['avg_recency'] else 0,
+                            result['avg_frequency'] if result['avg_frequency'] else 0,
+                            result['avg_monetary'] if result['avg_monetary'] else 0
+                        ]
+                        
+                        # Normalize
+                        max_values = [365, 100, 10000]
+                        customer_norm = [v/max_values[i] for i, v in enumerate(customer_values)]
+                        cluster_norm = [v/max_values[i] for i, v in enumerate(cluster_avg)]
+                        
+                        fig.add_trace(go.Scatterpolar(
+                            r=customer_norm,
+                            theta=['Recency', 'Frequency', 'Monetary'],
+                            fill='toself',
+                            name='Customer',
+                            line_color='#667eea',
+                            fillcolor='rgba(102, 126, 234, 0.3)'
+                        ))
+                        
+                        fig.add_trace(go.Scatterpolar(
+                            r=cluster_norm,
+                            theta=['Recency', 'Frequency', 'Monetary'],
+                            fill='toself',
+                            name=f'Cluster {segment} Avg',
+                            line_color='#e74c3c',
+                            fillcolor='rgba(231, 76, 60, 0.2)'
+                        ))
+                        
+                        fig.update_layout(
+                            polar=dict(
+                                radialaxis=dict(
+                                    visible=True,
+                                    range=[0, 1]
+                                )
+                            ),
+                            showlegend=True,
+                            title="Customer vs Cluster Average",
+                            height=400
+                        )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.error("❌ Could not predict segment. Please check your input values.")
 
@@ -558,6 +643,12 @@ elif page == "🔍 Product Recommendations":
     st.markdown('<div class="main-header">🔍 Product Recommendations</div>', unsafe_allow_html=True)
     st.markdown("Find similar products based on collaborative filtering")
     st.markdown("---")
+    
+    # Check if recommendation system is available
+    if models['item_similarity'] is None:
+        st.warning("⚠️ Recommendation system is not fully available. Please run the preprocessing script with the full recommendation system.")
+    else:
+        st.success("✅ Recommendation system is ready!")
     
     col1, col2 = st.columns([1, 1])
     
@@ -589,6 +680,23 @@ elif page == "🔍 Product Recommendations":
                 with st.expander("💡 Did you mean:"):
                     for _, row in matches.iterrows():
                         st.markdown(f"- {row['Description']} (Code: {row['StockCode']})")
+        
+        # Popular products section
+        with st.expander("🔥 Popular Products"):
+            try:
+                df = models['df_clean']
+                popular = df.groupby('StockCode').agg({
+                    'Description': 'first',
+                    'Quantity': 'sum',
+                    'CustomerID': 'nunique'
+                }).reset_index()
+                popular.columns = ['StockCode', 'Description', 'Total_Sold', 'Unique_Buyers']
+                popular = popular.sort_values('Total_Sold', ascending=False).head(10)
+                
+                for _, row in popular.iterrows():
+                    st.markdown(f"• {row['Description']} (Sold: {row['Total_Sold']:,})")
+            except:
+                pass
     
     with col2:
         if search_clicked and product_input:
@@ -667,18 +775,21 @@ else:
     st.markdown("Overview of customer segments and system statistics")
     st.markdown("---")
     
+    # Get the correct RFM data
+    rfm_data = models['rfm_data'] if models['rfm_data'] is not None else models['segmentation']['rfm_data']
+    
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         st.markdown(f"""
         <div class="metric-card">
             <h3>👥 Total Customers</h3>
-            <h2>{models['segmentation']['rfm_data'].shape[0]:,}</h2>
+            <h2>{rfm_data.shape[0]:,}</h2>
         </div>
         """, unsafe_allow_html=True)
     
     with col2:
-        total_revenue = models['segmentation']['rfm_data']['Monetary'].sum()
+        total_revenue = rfm_data['Monetary'].sum()
         st.markdown(f"""
         <div class="metric-card">
             <h3>💰 Total Revenue</h3>
@@ -687,7 +798,7 @@ else:
         """, unsafe_allow_html=True)
     
     with col3:
-        avg_spend = models['segmentation']['rfm_data']['Monetary'].mean()
+        avg_spend = rfm_data['Monetary'].mean()
         st.markdown(f"""
         <div class="metric-card">
             <h3>💵 Avg. Customer Spend</h3>
@@ -709,58 +820,62 @@ else:
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("### 📊 Segment Distribution")
-        
-        fig = px.pie(
-            models['cluster_summary'],
-            values='Size',
-            names='Segment_Label',
-            title='Customer Segment Distribution',
-            color='Segment_Label',
-            color_discrete_map={
-                'High-Value': '#2ecc71',
-                'Regular': '#3498db',
-                'Occasional': '#f39c12',
-                'At-Risk': '#e74c3c',
-                'Loyal': '#9b59b6',
-                'Dormant': '#95a5a6',
-                'Active': '#1abc9c'
-            }
-        )
-        fig.update_traces(textposition='inside', textinfo='percent+label')
-        fig.update_layout(height=400)
-        st.plotly_chart(fig, use_container_width=True)
+        if models['cluster_summary'] is not None:
+            st.markdown("### 📊 Segment Distribution")
+            
+            fig = px.pie(
+                models['cluster_summary'],
+                values='Size',
+                names='Segment_Label',
+                title='Customer Segment Distribution',
+                color='Segment_Label',
+                color_discrete_map={
+                    'High-Value': '#2ecc71',
+                    'Regular': '#3498db',
+                    'Occasional': '#f39c12',
+                    'At-Risk': '#e74c3c',
+                    'Loyal': '#9b59b6',
+                    'Dormant': '#95a5a6',
+                    'Active': '#1abc9c'
+                }
+            )
+            fig.update_traces(textposition='inside', textinfo='percent+label')
+            fig.update_layout(height=400)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Cluster summary not available")
     
     with col2:
-        st.markdown("### 📊 Segment Details")
-        
-        display_df = models['cluster_summary'].copy()
-        display_df['Percentage'] = display_df['Percentage'].apply(lambda x: f"{x:.1f}%")
-        display_df['Avg_Recency'] = display_df['Avg_Recency'].apply(lambda x: f"{x:.1f} days")
-        display_df['Avg_Frequency'] = display_df['Avg_Frequency'].apply(lambda x: f"{x:.1f}")
-        display_df['Avg_Monetary'] = display_df['Avg_Monetary'].apply(lambda x: f"${x:,.2f}")
-        
-        st.dataframe(
-            display_df[['Segment_Label', 'Size', 'Percentage', 'Avg_Recency', 'Avg_Frequency', 'Avg_Monetary']],
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                'Segment_Label': 'Segment',
-                'Size': 'Customers',
-                'Percentage': '%',
-                'Avg_Recency': 'Avg Recency',
-                'Avg_Frequency': 'Avg Frequency',
-                'Avg_Monetary': 'Avg Spend'
-            }
-        )
+        if models['cluster_summary'] is not None:
+            st.markdown("### 📊 Segment Details")
+            
+            display_df = models['cluster_summary'].copy()
+            display_df['Percentage'] = display_df['Percentage'].apply(lambda x: f"{x:.1f}%")
+            display_df['Avg_Recency'] = display_df['Avg_Recency'].apply(lambda x: f"{x:.1f} days")
+            display_df['Avg_Frequency'] = display_df['Avg_Frequency'].apply(lambda x: f"{x:.1f}")
+            display_df['Avg_Monetary'] = display_df['Avg_Monetary'].apply(lambda x: f"${x:,.2f}")
+            
+            st.dataframe(
+                display_df[['Segment_Label', 'Size', 'Percentage', 'Avg_Recency', 'Avg_Frequency', 'Avg_Monetary']],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'Segment_Label': 'Segment',
+                    'Size': 'Customers',
+                    'Percentage': '%',
+                    'Avg_Recency': 'Avg Recency',
+                    'Avg_Frequency': 'Avg Frequency',
+                    'Avg_Monetary': 'Avg Spend'
+                }
+            )
+        else:
+            st.info("Cluster summary not available")
     
     st.markdown("---")
     
     st.markdown("### 📈 RFM Distributions")
     
     col1, col2, col3 = st.columns(3)
-    
-    rfm_data = models['segmentation']['rfm_data']
     
     with col1:
         fig = px.histogram(
