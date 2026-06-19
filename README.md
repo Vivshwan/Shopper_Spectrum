@@ -24,6 +24,10 @@
 
 ## 🚀 Quick Start
 
+### Dataset Link:
+The dataset can be downloaded from the following sources and save it as "online_retail.csv":
+https://drive.google.com/file/d/1rzRwxm_CJxcRzfoo9Ix37A2JTlMummY-/view?usp=sharing
+
 ```bash
 # Install dependencies
 pip install -r requirements.txt
