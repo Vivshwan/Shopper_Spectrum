@@ -51,20 +51,30 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 ### Step 4: Run Preprocessing Pipeline
 ```python preprocessing.py```
+
 What happens here:
 
 🔄 Data cleaning & preprocessing
+
 📊 RFM analysis on customer data
+
 🧮 K-Means clustering (4 clusters)
+
 🎯 Segment labeling (High-Value, Regular, Occasional, At-Risk)
+
 🤖 Model training & saving
 
 🔍 Product recommendation system generation
+
 📈 Visualizations saved in models/ folder
 Output: Models saved in models/ directory:
+
 streamlit_model_package.pkl - Complete model package
+
 recommendation_model.pkl - Product recommendation system
+
 cluster_summary_with_labels.csv - Segment statistics
+
 *.png - Visualization outputs
 
 ### Step 5: Launch Streamlit App
