@@ -3,36 +3,40 @@
 # Customer Segmentation & Product Recommendation System
 # ============================================================================
 
-import streamlit as st
-import pandas as pd
-import numpy as np
-import pickle
-import os
-import requests
-import plotly.express as px
-import plotly.graph_objects as go
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics.pairwise import cosine_similarity
+# Import required libraries
+import streamlit as st                      # Web app framework for building the UI
+import pandas as pd                         # Data manipulation and analysis
+import numpy as np                          # Numerical computations
+import pickle                               # Loading saved Python objects/models
+import os                                   # File system operations
+import requests                             # HTTP requests for downloading datasets
+import plotly.express as px                 # Interactive visualizations
+import plotly.graph_objects as go           # Advanced plotly charts
+from sklearn.preprocessing import StandardScaler  # Feature scaling for predictions
+from sklearn.metrics.pairwise import cosine_similarity  # For recommendation system
 import warnings
-warnings.filterwarnings('ignore')
+warnings.filterwarnings('ignore')           # Suppress warning messages
 
 # ============================================================================
-# PAGE CONFIGURATION
+# SECTION 1: PAGE CONFIGURATION
 # ============================================================================
 
+# Configure Streamlit page settings (must be first Streamlit command)
 st.set_page_config(
-    page_title="Shopper Spectrum - Customer Intelligence",
-    page_icon="🛍️",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="Shopper Spectrum - Customer Intelligence",  # Browser tab title
+    page_icon="🛍️",                                         # Browser tab icon (emoji)
+    layout="wide",                                          # Use full-width layout
+    initial_sidebar_state="expanded"                       # Sidebar open by default
 )
 
 # ============================================================================
-# CUSTOM CSS
+# SECTION 2: CUSTOM CSS STYLING
 # ============================================================================
 
+# Inject custom CSS to style the Streamlit app
 st.markdown("""
 <style>
+    /* Main header styling - gradient text effect */
     .main-header {
         font-size: 2.8rem;
         font-weight: bold;
@@ -43,6 +47,7 @@ st.markdown("""
         padding: 1rem 0;
     }
     
+    /* Sub-header styling with bottom border */
     .sub-header {
         font-size: 1.8rem;
         font-weight: bold;
@@ -52,6 +57,7 @@ st.markdown("""
         margin-bottom: 1rem;
     }
     
+    /* Metric card styling - gradient background cards */
     .metric-card {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         padding: 1.5rem;
@@ -71,6 +77,7 @@ st.markdown("""
         font-size: 2rem;
     }
     
+    /* Segment badge styling for visual tags */
     .segment-badge {
         display: inline-block;
         padding: 0.5rem 1.5rem;
@@ -81,6 +88,7 @@ st.markdown("""
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
     
+    /* Product card styling - each recommendation as a card */
     .product-card {
         background: white;
         padding: 1rem;
@@ -91,7 +99,7 @@ st.markdown("""
         transition: transform 0.3s;
     }
     .product-card:hover {
-        transform: translateX(5px);
+        transform: translateX(5px);  /* Slight hover animation */
         box-shadow: 0 4px 8px rgba(0,0,0,0.15);
     }
     .product-card .rank {
@@ -109,6 +117,7 @@ st.markdown("""
         color: #666;
     }
     
+    /* Custom button styling - gradient buttons */
     .stButton button {
         width: 100%;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -125,6 +134,7 @@ st.markdown("""
         box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
     }
     
+    /* Info box styling for tips and explanations */
     .info-box {
         background: #f8f9fa;
         padding: 1rem;
@@ -133,6 +143,7 @@ st.markdown("""
         margin: 1rem 0;
     }
     
+    /* Footer styling */
     .footer {
         text-align: center;
         padding: 2rem;
@@ -141,31 +152,39 @@ st.markdown("""
         margin-top: 2rem;
     }
 </style>
-""", unsafe_allow_html=True)
+""", unsafe_allow_html=True)  # unsafe_allow_html=True required for custom CSS
 
 # ============================================================================
-# DATASET LOADER
+# SECTION 3: DATASET LOADER
 # ============================================================================
 
-@st.cache_resource
+@st.cache_resource  # Cache the dataset to avoid re-downloading on each interaction
 def download_dataset():
-    """Download dataset if not present"""
+    """
+    Download the online retail dataset from Google Drive if not present locally.
+    Uses caching to prevent multiple downloads.
+    
+    Returns:
+        bool: True if dataset is available, False otherwise
+    """
     dataset_path = 'online_retail.csv'
     
+    # Check if dataset already exists locally
     if os.path.exists(dataset_path):
         st.success("✅ Dataset found locally")
         return True
     
+    # Download dataset with progress spinner
     with st.spinner("📥 Downloading dataset (this may take a moment)..."):
         try:
-            # Google Drive direct download
+            # Google Drive direct download using file ID
             file_id = '1rzRwxm_CJxcRzfoo9Ix37A2JTlMummY-'
             url = f'https://drive.google.com/uc?export=download&id={file_id}'
             
-            # Download with progress
+            # Download with streaming for large files
             response = requests.get(url, stream=True, timeout=60)
             
-            # Handle Google Drive's confirmation page
+            # Handle Google Drive's confirmation page (for large files)
             if 'confirm' in response.text:
                 import re
                 confirm_token = re.search(r'confirm=([^&]+)', response.text)
@@ -173,13 +192,14 @@ def download_dataset():
                     confirm_url = f'https://drive.google.com/uc?id={file_id}&confirm={confirm_token.group(1)}'
                     response = requests.get(confirm_url, stream=True, timeout=60)
             
-            # Save file
+            # Save file with progress tracking
             total_size = int(response.headers.get('content-length', 0))
             with open(dataset_path, 'wb') as f:
                 if total_size == 0:
-                    f.write(response.content)
+                    f.write(response.content)  # Small file - write directly
                 else:
                     downloaded = 0
+                    # Write in chunks to handle large files efficiently
                     for chunk in response.iter_content(chunk_size=8192):
                         f.write(chunk)
                         downloaded += len(chunk)
@@ -188,30 +208,37 @@ def download_dataset():
             return True
             
         except Exception as e:
+            # Handle download errors gracefully
             st.error(f"❌ Error downloading dataset: {e}")
             st.info("ℹ️ Please manually download the dataset from:\nhttps://drive.google.com/file/d/1rzRwxm_CJxcRzfoo9Ix37A2JTlMummY-/view?usp=sharing")
             return False
 
 # ============================================================================
-# LOAD MODELS
+# SECTION 4: LOAD MODELS
 # ============================================================================
 
-@st.cache_resource
+@st.cache_resource  # Cache models to avoid reloading on each interaction
 def load_models():
-    """Load all saved models and data"""
-    models_dir = 'models'
+    """
+    Load all saved machine learning models and preprocessed data.
+    This function handles both segmentation and recommendation models.
     
-    # Ensure dataset exists
+    Returns:
+        dict: Dictionary containing all models and data, or None if loading fails
+    """
+    models_dir = 'models'  # Directory where models are stored
+    
+    # Ensure dataset exists before loading models
     if not os.path.exists('online_retail.csv'):
         if not download_dataset():
             return None
     
     try:
-        # Load segmentation model package
+        # Load segmentation model package (main model)
         with open(f'{models_dir}/streamlit_model_package.pkl', 'rb') as file:
             segmentation_model = pickle.load(file)
         
-        # Load recommendation model if available
+        # Attempt to load recommendation model if available
         recommendation_model = None
         try:
             if os.path.exists(f'{models_dir}/recommendation_model.pkl'):
@@ -221,27 +248,29 @@ def load_models():
         except Exception as e:
             print(f"⚠️ Error loading recommendation model: {e}")
         
-        # Get data from model package
+        # Extract data from model package
         rfm_data = segmentation_model.get('rfm_data', None)
         cluster_summary = segmentation_model.get('cluster_summary', None)
         segment_labels = segmentation_model.get('segment_labels', None)
         segment_colors = segmentation_model.get('segment_colors', None)
         segment_descriptions = segmentation_model.get('segment_descriptions', None)
         
-        # If cluster_summary is None, try to create it from rfm_data and cluster labels
+        # If cluster_summary is missing, create it from RFM data
         if cluster_summary is None and rfm_data is not None:
             try:
-                # Create cluster summary from rfm_data
+                # Calculate cluster statistics
                 cluster_stats = rfm_data.groupby('Cluster').agg({
                     'Recency': 'mean',
                     'Frequency': 'mean',
                     'Monetary': 'mean'
                 }).reset_index()
                 
+                # Calculate cluster sizes and percentages
                 cluster_sizes = rfm_data['Cluster'].value_counts().reset_index()
                 cluster_sizes.columns = ['Cluster', 'Size']
                 cluster_sizes['Percentage'] = (cluster_sizes['Size'] / len(rfm_data) * 100).round(1)
                 
+                # Merge statistics with sizes
                 cluster_summary = cluster_stats.merge(cluster_sizes, on='Cluster')
                 cluster_summary['Segment_Label'] = cluster_summary['Cluster'].map(segment_labels)
                 
@@ -252,7 +281,7 @@ def load_models():
                     'Monetary': 'Avg_Monetary'
                 })
                 
-                # Add characteristics
+                # Add descriptions if available
                 if segment_descriptions:
                     cluster_summary['Characteristics'] = cluster_summary['Segment_Label'].map(segment_descriptions)
                 
@@ -261,8 +290,9 @@ def load_models():
             except Exception as e:
                 print(f"⚠️ Could not create cluster summary: {e}")
         
-        # Load product descriptions from dataset
+        # Load and process product data for recommendations
         try:
+            # Read and clean the dataset
             df_clean = pd.read_csv('online_retail.csv')
             df_clean['InvoiceDate'] = pd.to_datetime(df_clean['InvoiceDate'], errors='coerce')
             df_clean = df_clean.dropna(subset=['CustomerID'])
@@ -271,10 +301,11 @@ def load_models():
             df_clean = df_clean[df_clean['UnitPrice'] > 0]
             df_clean['TotalAmount'] = df_clean['Quantity'] * df_clean['UnitPrice']
             
+            # Get unique product descriptions
             product_descriptions = df_clean[['StockCode', 'Description']].drop_duplicates(subset=['StockCode'])
             product_descriptions = product_descriptions.dropna(subset=['Description'])
             
-            # Create user-item matrix for recommendations
+            # Create user-item matrix for collaborative filtering
             user_item_matrix = df_clean.pivot_table(
                 index='CustomerID',
                 columns='StockCode',
@@ -283,14 +314,15 @@ def load_models():
                 aggfunc='sum'
             )
             
-            # Load or calculate similarity matrix
+            # Load or calculate item similarity matrix
             if recommendation_model is not None:
+                # Try to find similarity matrix in recommendation model
                 if 'item_similarity_matrix' in recommendation_model:
                     item_similarity_df = recommendation_model['item_similarity_matrix']
                 elif 'item_similarity' in recommendation_model:
                     item_similarity_df = recommendation_model['item_similarity']
                 else:
-                    # Try to find any similarity matrix
+                    # Search for any similarity matrix
                     for key in recommendation_model.keys():
                         if 'similarity' in key.lower() or 'sim' in key.lower():
                             item_similarity_df = recommendation_model[key]
@@ -298,7 +330,7 @@ def load_models():
                     else:
                         item_similarity_df = None
             else:
-                # Calculate similarity on subset if needed
+                # Calculate similarity on subset if model not available
                 if len(user_item_matrix.columns) <= 500:
                     from sklearn.metrics.pairwise import cosine_similarity
                     item_similarity = cosine_similarity(user_item_matrix.T)
@@ -308,6 +340,7 @@ def load_models():
                         columns=user_item_matrix.columns
                     )
                 else:
+                    # Use top 500 products for efficiency
                     top_products = df_clean.groupby('StockCode')['Quantity'].sum().sort_values(ascending=False).head(500).index
                     user_item_subset = user_item_matrix[top_products]
                     from sklearn.metrics.pairwise import cosine_similarity
@@ -318,6 +351,7 @@ def load_models():
                         columns=user_item_subset.columns
                     )
             
+            # Return all models and data as a dictionary
             return {
                 'segmentation': segmentation_model,
                 'cluster_summary': cluster_summary,
@@ -347,14 +381,24 @@ def load_models():
         return None
 
 # ============================================================================
-# HELPER FUNCTIONS
+# SECTION 5: HELPER FUNCTIONS
 # ============================================================================
 
 def get_segment_color(segment):
-    """Return color for each segment"""
+    """
+    Get color for a customer segment for consistent visualization.
+    
+    Args:
+        segment (str): Segment name (e.g., 'High-Value')
+    
+    Returns:
+        str: Hex color code
+    """
+    # Use colors from model package if available
     if models and models.get('segment_colors'):
         return models['segment_colors'].get(segment, '#95a5a6')
     
+    # Fallback color mapping
     colors = {
         'High-Value': '#2ecc71',
         'Regular': '#3498db',
@@ -367,7 +411,15 @@ def get_segment_color(segment):
     return colors.get(segment, '#95a5a6')
 
 def get_segment_emoji(segment):
-    """Return emoji for each segment"""
+    """
+    Get emoji for a customer segment.
+    
+    Args:
+        segment (str): Segment name
+    
+    Returns:
+        str: Emoji character
+    """
     emojis = {
         'High-Value': '👑',
         'Regular': '⭐',
@@ -380,10 +432,20 @@ def get_segment_emoji(segment):
     return emojis.get(segment, '📌')
 
 def get_segment_description(segment):
-    """Return description for each segment"""
+    """
+    Get description for a customer segment.
+    
+    Args:
+        segment (str): Segment name
+    
+    Returns:
+        str: Human-readable description
+    """
+    # Use descriptions from model package if available
     if models and models.get('segment_descriptions'):
         return models['segment_descriptions'].get(segment, 'Active customer with mixed behavior')
     
+    # Fallback descriptions
     descriptions = {
         'High-Value': 'Premium customers who purchase frequently and spend the most',
         'Regular': 'Steady purchasers with consistent buying behavior',
@@ -396,7 +458,18 @@ def get_segment_description(segment):
     return descriptions.get(segment, 'Active customer with mixed behavior')
 
 def get_product_recommendations(product_input, n_recommendations=5):
-    """Get product recommendations by description or stock code with improved search"""
+    """
+    Get product recommendations based on similarity search.
+    Uses collaborative filtering to find products similar to the input.
+    
+    Args:
+        product_input (str): Product name or StockCode to search for
+        n_recommendations (int): Number of recommendations to return
+    
+    Returns:
+        DataFrame: Recommended products with similarity scores, or None
+    """
+    # Validate input and model availability
     if not product_input or models is None:
         return None
     
@@ -404,14 +477,14 @@ def get_product_recommendations(product_input, n_recommendations=5):
         # Clean and prepare search term
         search_term = product_input.strip().lower()
         
-        # Search by description (case-insensitive, partial match)
+        # Search by product description (case-insensitive, partial match)
         matches = models['product_descriptions'][
             models['product_descriptions']['Description'].str.lower().str.contains(
                 search_term, na=False
             )
         ]
         
-        # If no matches by description, try as stock code
+        # If no matches by description, try searching by stock code
         if len(matches) == 0:
             matches = models['product_descriptions'][
                 models['product_descriptions']['StockCode'].str.lower().str.contains(
@@ -421,19 +494,19 @@ def get_product_recommendations(product_input, n_recommendations=5):
         
         # If still no matches, try fuzzy matching on description
         if len(matches) == 0:
-            # Try to find products with similar words
+            # Split search term into words
             search_words = search_term.split()
             if len(search_words) > 1:
-                # Find products that contain at least 2 of the search words
+                # Find products containing at least 2 of the search words
                 mask = pd.Series(False, index=models['product_descriptions'].index)
                 for word in search_words:
-                    if len(word) > 2:  # Ignore short words
+                    if len(word) > 2:  # Ignore very short words
                         word_mask = models['product_descriptions']['Description'].str.lower().str.contains(
                             word, na=False
                         )
                         mask = mask | word_mask
                 
-                # Get matches where at least 2 words match
+                # Apply threshold based on number of search words
                 word_counts = mask.astype(int)
                 if len(search_words) > 2:
                     matches = models['product_descriptions'][word_counts >= 2]
@@ -444,10 +517,10 @@ def get_product_recommendations(product_input, n_recommendations=5):
         if len(matches) == 0:
             return None
         
-        # Try multiple potential products to find one with similarity scores
+        # Try each matching product to find recommendations
         all_recommendations = []
         
-        # Try each matching product until we find one with recommendations
+        # Iterate through top 5 matches
         for idx, (_, match_row) in enumerate(matches.head(5).iterrows()):
             product_code = match_row['StockCode']
             
@@ -468,20 +541,22 @@ def get_product_recommendations(product_input, n_recommendations=5):
             
             # Get product details for each recommendation
             for code, score in top_similar.items():
-                # Skip if score is too low
+                # Skip products with low similarity
                 if score < 0.1:  # Minimum similarity threshold
                     continue
                     
+                # Get product description
                 desc_match = models['product_descriptions'][
                     models['product_descriptions']['StockCode'] == code
                 ]
                 desc = desc_match['Description'].iloc[0] if len(desc_match) > 0 else f'Product_{code}'
                 
-                # Get additional stats
+                # Get additional product statistics
                 df = models['df_clean']
                 total_sold = df[df['StockCode'] == code]['Quantity'].sum()
                 unique_buyers = df[df['StockCode'] == code]['CustomerID'].nunique()
                 
+                # Add to recommendations list
                 all_recommendations.append({
                     'StockCode': code,
                     'Description': desc,
@@ -490,13 +565,12 @@ def get_product_recommendations(product_input, n_recommendations=5):
                     'Unique_Buyers': int(unique_buyers)
                 })
             
-            # If we found recommendations for this product, break
+            # If we found recommendations, break
             if len(all_recommendations) > 0:
                 break
         
-        # If we still have no recommendations, try a different approach
+        # If no recommendations found, use popular products as fallback
         if len(all_recommendations) == 0:
-            # Try to recommend popular products as fallback
             df = models['df_clean']
             popular = df.groupby('StockCode').agg({
                 'Description': 'first',
@@ -515,10 +589,9 @@ def get_product_recommendations(product_input, n_recommendations=5):
                     'Unique_Buyers': int(row['Unique_Buyers'])
                 })
             
-            # Return popular products as recommendations
+            # Return popular products
             if len(all_recommendations) > 0:
                 df_recs = pd.DataFrame(all_recommendations)
-                # Return only top N
                 return df_recs.head(n_recommendations)
         
         # Remove duplicates and sort by similarity
@@ -527,7 +600,6 @@ def get_product_recommendations(product_input, n_recommendations=5):
             df_recs = df_recs.drop_duplicates(subset=['StockCode'])
             df_recs = df_recs.sort_values('Similarity_Score', ascending=False)
             
-            # Return only top N
             return df_recs.head(n_recommendations)
         
         return None
@@ -539,22 +611,37 @@ def get_product_recommendations(product_input, n_recommendations=5):
         return None
 
 def predict_customer_segment(recency, frequency, monetary):
-    """Predict customer segment based on RFM values"""
+    """
+    Predict customer segment based on RFM values.
+    Uses the trained K-Means model and scaler.
+    
+    Args:
+        recency (int): Days since last purchase
+        frequency (int): Number of purchases
+        monetary (float): Total amount spent
+    
+    Returns:
+        dict: Prediction results including segment, cluster stats, etc.
+    """
+    # Validate model availability
     if models is None:
         return None
     
     try:
+        # Extract segmentation components
         segmentation = models['segmentation']
-        scaler = segmentation['scaler']
-        model = segmentation['model']
+        scaler = segmentation['scaler']  # StandardScaler for normalization
+        model = segmentation['model']    # K-Means model
         segment_labels = models.get('segment_labels', {})
         
-        # Scale and predict
+        # Scale customer data using the same scaler used in training
         scaled_data = scaler.transform([[recency, frequency, monetary]])
+        
+        # Predict cluster
         cluster = model.predict(scaled_data)[0]
         segment = segment_labels.get(cluster, 'Unknown')
         
-        # Get cluster statistics
+        # Get cluster statistics from summary
         if models['cluster_summary'] is not None:
             stats = models['cluster_summary'][models['cluster_summary']['Cluster'] == cluster]
             avg_recency = float(stats['Avg_Recency'].values[0]) if len(stats) > 0 else None
@@ -565,6 +652,7 @@ def predict_customer_segment(recency, frequency, monetary):
         else:
             avg_recency = avg_frequency = avg_monetary = cluster_size = cluster_percentage = None
         
+        # Return comprehensive prediction results
         return {
             'cluster': int(cluster),
             'segment': segment,
@@ -579,32 +667,35 @@ def predict_customer_segment(recency, frequency, monetary):
         return None
 
 # ============================================================================
-# LOAD MODELS
+# SECTION 6: LOAD MODELS (EXECUTION)
 # ============================================================================
 
+# Load all models when the app starts
 models = load_models()
 
+# Stop execution if models couldn't be loaded
 if models is None:
     st.stop()
 
 # ============================================================================
-# SIDEBAR
+# SECTION 7: SIDEBAR NAVIGATION
 # ============================================================================
 
 with st.sidebar:
+    # App title in sidebar
     st.markdown("# 🛍️ Shopper Spectrum")
     st.markdown("---")
     
-    # Navigation
+    # Navigation radio buttons
     page = st.radio(
         "📌 Navigate",
         ["🎯 Customer Segmentation", "🔍 Product Recommendations", "📊 Dashboard"],
-        index=0
+        index=0  # Default to first page
     )
     
     st.markdown("---")
     
-    # System info
+    # System information section
     st.markdown("### 📊 System Info")
     if models['rfm_data'] is not None:
         st.markdown(f"**Total Customers:** {models['rfm_data'].shape[0]:,}")
@@ -614,11 +705,12 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # Quick stats
+    # Quick stats section showing segment distribution
     if models['cluster_summary'] is not None:
         st.markdown("### 📈 Quick Stats")
         for _, row in models['cluster_summary'].iterrows():
             color = get_segment_color(row['Segment_Label'])
+            # Display colored dot with segment name and size
             st.markdown(
                 f"<span style='color:{color};font-weight:bold'>●</span> "
                 f"{row['Segment_Label']}: {row['Size']:,} ({row['Percentage']:.1f}%)",
@@ -626,20 +718,24 @@ with st.sidebar:
             )
 
 # ============================================================================
-# PAGE: CUSTOMER SEGMENTATION
+# SECTION 8: PAGE - CUSTOMER SEGMENTATION
 # ============================================================================
 
 if page == "🎯 Customer Segmentation":
+    # Page header
     st.markdown('<div class="main-header">🎯 Customer Segmentation</div>', unsafe_allow_html=True)
     st.markdown("Identify customer segments based on Recency, Frequency, and Monetary (RFM) values")
     st.markdown("---")
     
+    # Create two columns for input and results
     col1, col2 = st.columns([1, 1.5])
     
     with col1:
+        # Input section
         st.markdown('<div class="sub-header">📝 Enter Customer Details</div>', unsafe_allow_html=True)
         
         with st.container():
+            # Recency input
             st.markdown("### 📅 Recency")
             recency = st.number_input(
                 "Days since last purchase",
@@ -650,6 +746,7 @@ if page == "🎯 Customer Segmentation":
                 help="Number of days since the customer's last purchase"
             )
             
+            # Frequency input
             st.markdown("### 🔄 Frequency")
             frequency = st.number_input(
                 "Number of purchases",
@@ -660,6 +757,7 @@ if page == "🎯 Customer Segmentation":
                 help="Total number of purchases made by the customer"
             )
             
+            # Monetary input
             st.markdown("### 💰 Monetary")
             monetary = st.number_input(
                 "Total amount spent ($)",
@@ -670,8 +768,10 @@ if page == "🎯 Customer Segmentation":
                 help="Total amount spent by the customer"
             )
         
+        # Predict button
         predict_clicked = st.button("🔮 Predict Customer Segment", use_container_width=True)
         
+        # RFM explanation expander
         with st.expander("📖 Understanding RFM"):
             st.markdown("""
             **Recency** ⏰
@@ -688,6 +788,7 @@ if page == "🎯 Customer Segmentation":
             """)
     
     with col2:
+        # Results section
         if predict_clicked:
             with st.spinner("Analyzing customer data..."):
                 result = predict_customer_segment(recency, frequency, monetary)
@@ -697,6 +798,7 @@ if page == "🎯 Customer Segmentation":
                     color = get_segment_color(segment)
                     emoji = get_segment_emoji(segment)
                     
+                    # Display segment result with styling
                     st.markdown(f"""
                     <div style="background: linear-gradient(135deg, {color}22 0%, {color}11 100%); 
                                 padding: 2rem; border-radius: 15px; border: 2px solid {color};
@@ -713,6 +815,7 @@ if page == "🎯 Customer Segmentation":
                     </div>
                     """, unsafe_allow_html=True)
                     
+                    # Display three metric cards
                     col_a, col_b, col_c = st.columns(3)
                     with col_a:
                         st.metric(
@@ -732,14 +835,15 @@ if page == "🎯 Customer Segmentation":
                             f"${avg_spend:,.2f}" if avg_spend else "N/A"
                         )
                     
-                    # Display cluster comparison
+                    # Display comparison chart if cluster stats available
                     if result['avg_recency'] is not None:
                         st.markdown("---")
                         st.markdown("### 📊 How This Customer Compares")
                         
-                        # Create comparison chart
+                        # Create radar chart comparing customer vs cluster average
                         fig = go.Figure()
                         
+                        # Prepare data for radar chart
                         customer_values = [recency, frequency, monetary]
                         cluster_avg = [
                             result['avg_recency'] if result['avg_recency'] else 0,
@@ -747,11 +851,12 @@ if page == "🎯 Customer Segmentation":
                             result['avg_monetary'] if result['avg_monetary'] else 0
                         ]
                         
-                        # Normalize
-                        max_values = [365, 100, 10000]
+                        # Normalize values for visualization
+                        max_values = [365, 100, 10000]  # Reasonable maximums
                         customer_norm = [v/max_values[i] for i, v in enumerate(customer_values)]
                         cluster_norm = [v/max_values[i] for i, v in enumerate(cluster_avg)]
                         
+                        # Add customer trace
                         fig.add_trace(go.Scatterpolar(
                             r=customer_norm,
                             theta=['Recency', 'Frequency', 'Monetary'],
@@ -761,6 +866,7 @@ if page == "🎯 Customer Segmentation":
                             fillcolor='rgba(102, 126, 234, 0.3)'
                         ))
                         
+                        # Add cluster average trace
                         fig.add_trace(go.Scatterpolar(
                             r=cluster_norm,
                             theta=['Recency', 'Frequency', 'Monetary'],
@@ -787,23 +893,26 @@ if page == "🎯 Customer Segmentation":
                     st.error("❌ Could not predict segment. Please check your input values.")
 
 # ============================================================================
-# PAGE: PRODUCT RECOMMENDATIONS
+# SECTION 9: PAGE - PRODUCT RECOMMENDATIONS
 # ============================================================================
 
 elif page == "🔍 Product Recommendations":
+    # Page header
     st.markdown('<div class="main-header">🔍 Product Recommendations</div>', unsafe_allow_html=True)
     st.markdown("Find similar products based on collaborative filtering")
     st.markdown("---")
     
-    # Check if recommendation system is available
+    # Check recommendation system availability
     if models['item_similarity'] is None:
         st.warning("⚠️ Recommendation system is not fully available. Please run the preprocessing script with the full recommendation system.")
     else:
         st.success("✅ Recommendation system is ready!")
     
+    # Create two columns for search and results
     col1, col2 = st.columns([1, 1])
     
     with col1:
+        # Search section
         st.markdown('<div class="sub-header">🔎 Search for a Product</div>', unsafe_allow_html=True)
         
         product_input = st.text_input(
@@ -822,6 +931,7 @@ elif page == "🔍 Product Recommendations":
         
         search_clicked = st.button("🔍 Find Similar Products", use_container_width=True)
         
+        # Show matching products as user types (autocomplete-like)
         if product_input and not search_clicked:
             matches = models['product_descriptions'][
                 models['product_descriptions']['Description'].str.contains(product_input, case=False, na=False)
@@ -850,11 +960,13 @@ elif page == "🔍 Product Recommendations":
                 pass
     
     with col2:
+        # Results section
         if search_clicked and product_input:
             with st.spinner("Finding similar products..."):
                 recommendations = get_product_recommendations(product_input, n_recs)
                 
                 if recommendations is not None and len(recommendations) > 0:
+                    # Show the original product searched for
                     original = models['product_descriptions'][
                         models['product_descriptions']['Description'].str.contains(product_input, case=False, na=False)
                     ].iloc[0] if len(models['product_descriptions'][
@@ -872,12 +984,14 @@ elif page == "🔍 Product Recommendations":
                         </div>
                         """, unsafe_allow_html=True)
                     
+                    # Display recommendations
                     st.markdown("### 🎯 Recommended Products")
                     
                     for idx, (_, row) in enumerate(recommendations.iterrows(), 1):
                         score = row['Similarity_Score']
                         similarity_pct = score * 100
                         
+                        # Each recommendation as a card
                         st.markdown(f"""
                         <div class="product-card">
                             <div style="display: flex; align-items: center; gap: 1rem;">
@@ -900,12 +1014,14 @@ elif page == "🔍 Product Recommendations":
                                     <div style="font-size: 0.8rem; color: #666;">similar</div>
                                 </div>
                             </div>
+                            <!-- Similarity progress bar -->
                             <div style="margin-top: 0.5rem; background: #e8edf5; border-radius: 5px; height: 6px;">
                                 <div style="background: linear-gradient(90deg, #667eea, #764ba2); width: {similarity_pct}%; height: 100%; border-radius: 5px;"></div>
                             </div>
                         </div>
                         """, unsafe_allow_html=True)
                     
+                    # Option to view as table
                     with st.expander("📊 View All Recommendations as Table"):
                         st.dataframe(
                             recommendations,
@@ -918,17 +1034,19 @@ elif page == "🔍 Product Recommendations":
             st.warning("⚠️ Please enter a product name or code.")
 
 # ============================================================================
-# PAGE: DASHBOARD
+# SECTION 10: PAGE - DASHBOARD
 # ============================================================================
 
 else:
+    # Page header
     st.markdown('<div class="main-header">📊 Dashboard</div>', unsafe_allow_html=True)
     st.markdown("Overview of customer segments and system statistics")
     st.markdown("---")
     
-    # Get the correct RFM data
+    # Get RFM data (from models or segmentation package)
     rfm_data = models['rfm_data'] if models['rfm_data'] is not None else models['segmentation']['rfm_data']
     
+    # Four key metrics in a row
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
@@ -968,9 +1086,11 @@ else:
     
     st.markdown("---")
     
+    # Two columns for charts
     col1, col2 = st.columns(2)
     
     with col1:
+        # Segment distribution pie chart
         if models['cluster_summary'] is not None:
             st.markdown("### 📊 Segment Distribution")
             
@@ -997,9 +1117,11 @@ else:
             st.info("Cluster summary not available")
     
     with col2:
+        # Segment details table
         if models['cluster_summary'] is not None:
             st.markdown("### 📊 Segment Details")
             
+            # Format data for display
             display_df = models['cluster_summary'].copy()
             display_df['Percentage'] = display_df['Percentage'].apply(lambda x: f"{x:.1f}%")
             display_df['Avg_Recency'] = display_df['Avg_Recency'].apply(lambda x: f"{x:.1f} days")
@@ -1024,11 +1146,13 @@ else:
     
     st.markdown("---")
     
+    # RFM distributions
     st.markdown("### 📈 RFM Distributions")
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
+        # Recency distribution
         fig = px.histogram(
             rfm_data,
             x='Recency',
@@ -1040,6 +1164,7 @@ else:
         st.plotly_chart(fig, use_container_width=True)
     
     with col2:
+        # Frequency distribution
         fig = px.histogram(
             rfm_data,
             x='Frequency',
@@ -1051,6 +1176,7 @@ else:
         st.plotly_chart(fig, use_container_width=True)
     
     with col3:
+        # Monetary distribution
         fig = px.histogram(
             rfm_data,
             x='Monetary',
@@ -1062,9 +1188,10 @@ else:
         st.plotly_chart(fig, use_container_width=True)
 
 # ============================================================================
-# FOOTER
+# SECTION 11: FOOTER
 # ============================================================================
 
+# App footer
 st.markdown("""
 <div class="footer">
     <p>🛍️ Shopper Spectrum - Customer Intelligence Platform</p>
